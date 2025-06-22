@@ -83,6 +83,8 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     BackgroundTask* GetBackgroundTask() const { return background_task_; }
 
+    void UltrasonicSensorTask(void* pvParameters);
+
 private:
     Application();
     ~Application();
@@ -139,6 +141,7 @@ private:
     void AudioLoop();
     void EnterAudioTestingMode();
     void ExitAudioTestingMode();
+    void HandleUltrasonicWakeWordDetected();
 };
 
 #endif // _APPLICATION_H_

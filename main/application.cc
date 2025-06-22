@@ -32,6 +32,8 @@
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 
+#include <esp_timer.h>
+
 #define TAG "Application"
 
 
@@ -49,6 +51,28 @@ static const char* const STATE_STRINGS[] = {
     "fatal_error",
     "invalid_state"
 };
+
+#define TRIGGER_PIN GPIO_NUM_11
+#define ECHO_PIN GPIO_NUM_12
+#define USE_ULTRASONIC_SENSOR 1
+
+float read_ultrasonic_distance() {
+    gpio_set_level(TRIGGER_PIN, 0);
+    esp_rom_delay_us(2);
+    gpio_set_level(TRIGGER_PIN, 1);
+    esp_rom_delay_us(10);
+    gpio_set_level(TRIGGER_PIN, 0);
+
+    while (gpio_get_level(ECHO_PIN) == 0);
+    int64_t echo_start = esp_timer_get_time();
+
+    while (gpio_get_level(ECHO_PIN) == 1);
+    int64_t echo_end = esp_timer_get_time();
+
+    float distance = (echo_end - echo_start) * 0.034 / 2;
+    return distance;
+}
+
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
@@ -98,6 +122,77 @@ Application::~Application() {
         delete background_task_;
     }
     vEventGroupDelete(event_group_);
+}
+
+void Application::UltrasonicSensorTask(void* pvParameters) {
+    int hit_count = 0;
+    int cool_down = 0;
+    while (1) {
+        // Read distance from ultrasonic sensor
+        float distance = read_ultrasonic_distance();
+        printf("Distance: %.2f cm\n", distance);
+
+        if (distance < 90.0) {
+            hit_count++;
+            if (hit_count >= 5) { // 连续3次检测到超声波唤醒词
+                hit_count = 0; // 重置计数器
+                Application::GetInstance().HandleUltrasonicWakeWordDetected();
+            }
+        } else {
+            cool_down++;
+            if (cool_down >= 10) { // 连续10次未检测到超声波唤醒词
+                hit_count = 0; // 重置计数器
+                cool_down = 0; // 重置冷却计数器
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(500)); // Delay for 500ms
+    }
+}
+
+void Application::HandleUltrasonicWakeWordDetected() {
+    if (!protocol_) {
+        return;
+    }
+
+    Schedule([this]() {
+        if (device_state_ == kDeviceStateIdle) {
+            if (!protocol_->IsAudioChannelOpened()) {
+                SetDeviceState(kDeviceStateConnecting);
+                if (!protocol_->OpenAudioChannel()) {
+                    return;
+                }
+            }
+
+            ESP_LOGI(TAG, "$$$$ - Ultrasonic trigger detected\n");
+#if XXX_CONFIG_USE_AFE_WAKE_WORD
+            AudioStreamPacket packet;
+            // Encode and send the wake word data to the server
+            while (wake_word_->GetWakeWordOpus(packet.payload)) {
+                protocol_->SendAudio(packet);
+            }
+            // Set the chat state to wake word detected
+            protocol_->SendWakeWordDetected("ultrasonic");
+#else
+            // Play the pop up sound to indicate the wake word is detected
+            // And wait 60ms to make sure the queue has been processed by audio task
+            ResetDecoder();
+            //PlaySound(Lang::Sounds::P3_POPUP);
+            vTaskDelay(pdMS_TO_TICKS(60));
+#endif
+            SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+            Schedule([this]() {
+                protocol_->SendWakeWordDetected("嗨");
+            });
+        } else if (device_state_ == kDeviceStateListening) {
+            // If already listening, do nothing
+            return;
+        } else if (device_state_ == kDeviceStateSpeaking) {
+            // AbortSpeaking(kAbortReasonWakeWordDetected);
+        } else if (device_state_ == kDeviceStateActivating) {
+            SetDeviceState(kDeviceStateIdle);
+        }
+    });
 }
 
 void Application::CheckNewVersion() {
@@ -442,6 +537,25 @@ void Application::Start() {
         app->AudioLoop();
         vTaskDelete(NULL);
     }, "audio_loop", 4096 * 2, this, 8, &audio_loop_task_handle_);
+#endif
+
+#ifdef USE_ULTRASONIC_SENSOR
+    /* Initialize ultrasonic sensor pins */
+    gpio_set_direction(TRIGGER_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_direction(ECHO_PIN, GPIO_MODE_INPUT);
+
+    /* Create a task for the ultrasonic sensor */
+    // xTaskCreate(UltrasonicSensorTask, "ultrasonic_sensor", 2048, NULL, 5, NULL);
+    xTaskCreate(
+        [](void* pvParameters) {
+            Application::GetInstance().UltrasonicSensorTask(pvParameters);
+        },
+        "UltrasonicSensorTask",
+        4096,
+        nullptr,
+        tskIDLE_PRIORITY+1,
+        nullptr
+    );
 #endif
 
     /* Start the clock timer to update the status bar */
