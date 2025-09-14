@@ -63,11 +63,26 @@ float read_ultrasonic_distance() {
     esp_rom_delay_us(10);
     gpio_set_level(TRIGGER_PIN, 0);
 
+    /*
     while (gpio_get_level(ECHO_PIN) == 0);
     int64_t echo_start = esp_timer_get_time();
 
     while (gpio_get_level(ECHO_PIN) == 1);
+    int64_t echo_end = esp_timer_get_time();*/
+
+    int64_t timeout = esp_timer_get_time() + 30000; // 30ms timeout
+
+    while (gpio_get_level(ECHO_PIN) == 0) {
+        if (esp_timer_get_time() > timeout) return 999;
+    }
+    int64_t echo_start = esp_timer_get_time();
+
+    timeout = esp_timer_get_time() + 30000; // 30ms timeout
+    while (gpio_get_level(ECHO_PIN) == 1) {
+        if (esp_timer_get_time() > timeout) return 999;
+    }
     int64_t echo_end = esp_timer_get_time();
+
 
     float distance = (echo_end - echo_start) * 0.034 / 2;
     return distance;
@@ -132,7 +147,7 @@ void Application::UltrasonicSensorTask(void* pvParameters) {
         float distance = read_ultrasonic_distance();
         printf("Distance: %.2f cm\n", distance);
 
-        if (distance < 90.0) {
+        if (distance < 30.0) {
             hit_count++;
             if (hit_count >= 5) { // 连续3次检测到超声波唤醒词
                 hit_count = 0; // 重置计数器
